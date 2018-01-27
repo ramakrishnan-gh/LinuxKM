@@ -1,0 +1,23 @@
+ntumIndex[0], quantumLocalOffset[0]
+[ 2712.176993] Copied 40 bytes to user 
+[ 2712.179634] Requested offset 40 is greater than size 9
+[ 2726.721015] scull_trim invoked from open!
+[ 2726.721155] scull_trim invoked!
+[ 2726.721213] Inner while i[0], j[0], pointer[4100493824]
+[ 2726.721262] Inner while i[1], j[0], pointer[4100496960]
+[ 2726.721308] Inner while i[2], j[0], pointer[4100495488]
+[ 2726.721354] Inner while i[3], j[0], pointer[4100493440]
+[ 2726.721399] Inner while i[4], j[0], pointer[4100496256]
+[ 2726.721444] Inner while i[5], j[0], pointer[4100494144]
+[ 2726.721492] Inner while i[6], j[0], pointer[4100495680]
+[ 2726.721537] Inner while i[7], j[0], pointer[4100496832]
+[ 2726.721582] Inner while i[8], j[0], pointer[4100495744]
+[ 2726.721628] Inner while i[9], j[0], pointer[4100497280]
+[ 2726.721673] outer while i[10], j[0], pointer[4100496064]
+[ 2726.721719] outer while 2  i[10], j[0], pointer[4122463728]
+[ 2726.721764]  Freed qset[0]
+[ 2726.721846] outer while 3  i[10], j[1], pointer[4122463728]
+[ 2726.721917] Inner while i[0], j[1], pointer[4122461760]
+[ 2726.721975] Inner while i[1], j[1], pointer[71829376]
+[ 2726.723527] ------------[ cut here ]------------
+
