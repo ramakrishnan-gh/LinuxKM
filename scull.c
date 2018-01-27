@@ -6,6 +6,7 @@
 #include <linux/slab.h>
 #include "scull.h"
 
+
 struct scull_qset
 {
 	void **data;
@@ -200,7 +201,7 @@ ssize_t scull_write(struct file * filp, const char __user * buff, size_t count, 
 	*off += copyCount;
 	dev->size += copyCount;
 	printk( KERN_ALERT "Copied %d bytes from user \n", copyCount);
-	while (1);
+	//while (1); This is to test behavior of pre-emptible vs non-preemptible kernel
 	
 
 	return copyCount;
