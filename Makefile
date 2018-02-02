@@ -1,3 +1,4 @@
+obj-m += waitwake.o
 obj-m += scull.o
 
 all:
