@@ -4,8 +4,10 @@
 #include <asm/uaccess.h>
 #include <linux/cdev.h>
 #include <linux/slab.h>
+#include <linux/ioctl.h>
 #include "scull.h"
-
+#include "scull_ioctl.h"
+#include <linux/semaphore.h>
 
 struct scull_qset
 {
@@ -34,6 +36,7 @@ void scull_trim(struct scull_dev *dev )
 	printk(KERN_ALERT "scull_trim invoked!\n");
 	if ( dev == NULL )
 		return;
+
 	qsetData = dev->data;
 	while ( qsetData != NULL )
 	{
@@ -61,12 +64,17 @@ int scull_open(struct inode * inode, struct file * filp)
 {
 	if ( inode == NULL || filp == NULL )
 		return -EFAULT;
-	filp->private_data = container_of(inode->i_cdev, struct scull_dev, cdev );
+	struct scull_dev * dev;
+	dev = container_of(inode->i_cdev, struct scull_dev, cdev ); 
+	filp->private_data = dev;
+	if ( down_interruptible(&dev->sem))
+		return -ERESTARTSYS;
 	if (( filp->f_flags & O_ACCMODE )== O_WRONLY )
 	{
 		printk(KERN_ALERT "scull_trim invoked from open!\n");
-		scull_trim(container_of(inode->i_cdev, struct scull_dev, cdev ));
+		scull_trim(dev);
 	}
+	up(&dev->sem);
 	return 0;	
 }
 
@@ -83,6 +91,7 @@ ssize_t scull_read(struct file * filp, char __user * buff, size_t count, loff_t 
 	int qsetSize;
 	void* quantumData;
 	int copyCount;
+        ssize_t retVal;
 	if ( filp == NULL )
 		return -EFAULT;
 	dev = filp->private_data;
@@ -90,41 +99,53 @@ ssize_t scull_read(struct file * filp, char __user * buff, size_t count, loff_t 
 		return -EFAULT;
 	if ( off == NULL )
 		return -EFAULT;
+
+	if ( down_interruptible(&dev->sem));
+		return -ERESTARTSYS;
+
 	if ( *off >= dev->size ) 
 	{
 		printk( KERN_ALERT "Requested offset %lld is greater than size %lu\n", *off, dev->size );
-		return -EFAULT;
+		retVal = -EFAULT;
 	}
-	qsetSize = SCULL_QUANTUM * SCULL_QSET;	
-	qsetIndex = (int)(*off)/ qsetSize;
-	qsetLocalOffset = (int)(*off) % qsetSize;
-	quantumIndex = qsetLocalOffset / SCULL_QUANTUM;
-	quantumLocalOffset = qsetLocalOffset % SCULL_QUANTUM;
-	printk(KERN_ALERT "*off [%d], count [%d],  qsetIndex [%d], qsetLocalOffset [%d], quantumIndex[%d], quantumLocalOffset[%d]\n", 
-						(int)(*off), count, qsetIndex , qsetLocalOffset , quantumIndex, quantumLocalOffset);
-	qset = dev->data;
-	i = qsetIndex;
-	while ( qset != NULL && i > 0)
+	else
 	{
-		qset = qset->next;
-		i--;
+		qsetSize = SCULL_QUANTUM * SCULL_QSET;	
+		qsetIndex = (int)(*off)/ qsetSize;
+		qsetLocalOffset = (int)(*off) % qsetSize;
+		quantumIndex = qsetLocalOffset / SCULL_QUANTUM;
+		quantumLocalOffset = qsetLocalOffset % SCULL_QUANTUM;
+		printk(KERN_ALERT "*off [%d], count [%d],  qsetIndex [%d], qsetLocalOffset [%d], quantumIndex[%d], quantumLocalOffset[%d]\n", 
+							(int)(*off), count, qsetIndex , qsetLocalOffset , quantumIndex, quantumLocalOffset);
+		qset = dev->data;
+		i = qsetIndex;
+		while ( qset != NULL && i > 0)
+		{
+			qset = qset->next;
+			i--;
+		}
+		if ( qset == NULL )
+		{
+			printk( KERN_ALERT "dev->data NULL !\n ");
+			retVal =  -EFAULT;
+		}	
+		else if ( qset->data == NULL )
+		{
+			printk(KERN_ALERT "qset->data NULL !!\n");
+			retVal = -EFAULT;
+		}
+		else
+		{
+			quantumData = qset->data[quantumIndex];
+			copyCount = ( count <= (SCULL_QUANTUM - quantumLocalOffset) ? count :(SCULL_QUANTUM - quantumLocalOffset));
+			copy_to_user ( buff, quantumData + quantumLocalOffset, copyCount);
+			*off += copyCount;
+			printk( KERN_ALERT "Copied %d bytes to user \n", copyCount);	
+			retVal = copyCount;
+		}
 	}
-	if ( qset == NULL )
-	{
-		printk( KERN_ALERT "dev->data NULL !\n ");
-		return -EFAULT;
-	}	
-	if ( qset->data == NULL )
-	{
-		printk(KERN_ALERT "qset->data NULL !!\n");
-		return -EFAULT;
-	}
-	quantumData = qset->data[quantumIndex];
-	copyCount = ( count <= (SCULL_QUANTUM - quantumLocalOffset) ? count :(SCULL_QUANTUM - quantumLocalOffset));
-	copy_to_user ( buff, quantumData + quantumLocalOffset, copyCount);
-	*off += copyCount;
-	printk( KERN_ALERT "Copied %d bytes to user \n", copyCount);	
-	return copyCount;
+	up(&dev->sem);
+	return retVal;
 }
 
 struct scull_qset * scull_allocate_qset(void)
@@ -151,6 +172,7 @@ ssize_t scull_write(struct file * filp, const char __user * buff, size_t count, 
 	int copyCount;
 	int qsetIndex, qsetLocalOffset, quantumIndex, quantumLocalOffset;
 	int qsetSize;
+	ssize_t retVal;
 	if ( filp == NULL )
 		return -EFAULT;
 	dev = filp->private_data;
@@ -158,60 +180,108 @@ ssize_t scull_write(struct file * filp, const char __user * buff, size_t count, 
 		return -EFAULT;
 	if ( off == NULL )
 		return -EFAULT;
+
+	if (down_interruptible(&dev->sem))
+		return -ERESTARTSYS;
+
 	if ( *off > dev->size ) 
 	{
 		printk( KERN_ALERT "Requested offset %lld is greater than size %lu\n", *off, dev->size );
+		retVal = -EFAULT;
+	}
+        else
+        {
+		qsetSize = SCULL_QUANTUM * SCULL_QSET;	
+		qsetIndex = (int)(*off)/ qsetSize;
+		qsetLocalOffset = (int)(*off) % qsetSize;
+		quantumIndex = qsetLocalOffset / SCULL_QUANTUM;
+		quantumLocalOffset = qsetLocalOffset % SCULL_QUANTUM;
+		printk(KERN_ALERT "*off [%d], count [%d],  qsetIndex [%d], qsetLocalOffset [%d], quantumIndex[%d], quantumLocalOffset[%d]\n", 
+							(int)(*off), count, qsetIndex , qsetLocalOffset , quantumIndex, quantumLocalOffset);
+		i = qsetIndex;
+		prev = NULL;	
+		curr = &dev->data;
+		while ( *curr != NULL && i > 0)
+		{
+			prev = curr;
+			curr = &((*curr)->next);
+			i--;
+		}
+		if ( *curr == NULL )
+		{
+			printk(KERN_ALERT "Allocating a new scull_qset!\n");
+			*curr = scull_allocate_qset();
+			if ( prev != NULL )
+			{		
+				(*prev)->next = *curr;
+			}
+			else
+			{
+			   printk(KERN_ALERT "Allocated a new scull data chain !\n");		
+			}	
+			if ( quantumIndex != 0 || quantumLocalOffset != 0 )
+			{
+				printk(KERN_ALERT " Inconsistent state !!, new qset created but quantumIndex is %d and quantumLocalOffset is %d", quantumIndex, quantumLocalOffset );
+			}
+		}
+		copyCount = ( count < ( SCULL_QUANTUM - quantumLocalOffset ) ? count : ( SCULL_QUANTUM - quantumLocalOffset ));
+		copy_from_user ( (*curr)->data[quantumIndex] + quantumLocalOffset, buff, copyCount );
+		*off += copyCount;
+		dev->size += copyCount;
+		printk( KERN_ALERT "Copied %d bytes from user \n", copyCount);
+		retVal = copyCount;
+	}
+        up(&dev->sem);
+	return copyCount;
+}
+
+long scull_ioctl(struct file * filp, unsigned int cmd, unsigned long arg)
+{
+        printk(KERN_ALERT "Received IOCTL call %u\n", cmd);
+	long retVal;
+	struct scull_dev *dev;
+	if ( _IOC_TYPE(cmd) != SCULL_IOC_TYPE ) {
+        	printk(KERN_ALERT "IOC type not matching %u\n", _IOC_TYPE(cmd));
+		return -ENOTTY;
+	}
+	if ( filp == NULL ) {
+        	printk(KERN_ALERT "filep NULL\n");
 		return -EFAULT;
 	}
-	qsetSize = SCULL_QUANTUM * SCULL_QSET;	
-	qsetIndex = (int)(*off)/ qsetSize;
-	qsetLocalOffset = (int)(*off) % qsetSize;
-	quantumIndex = qsetLocalOffset / SCULL_QUANTUM;
-	quantumLocalOffset = qsetLocalOffset % SCULL_QUANTUM;
-	printk(KERN_ALERT "*off [%d], count [%d],  qsetIndex [%d], qsetLocalOffset [%d], quantumIndex[%d], quantumLocalOffset[%d]\n", 
-						(int)(*off), count, qsetIndex , qsetLocalOffset , quantumIndex, quantumLocalOffset);
-	i = qsetIndex;
-	prev = NULL;	
-	curr = &dev->data;
-	while ( *curr != NULL && i > 0)
-	{
-		prev = curr;
-		curr = &((*curr)->next);
-		i--;
+	dev = filp->private_data;
+	if ( dev == NULL ) {
+		printk(KERN_ALERT "dev is nULL!\n");
+		return -EFAULT;
 	}
-	if ( *curr == NULL )
+	if(down_interruptible(&dev->sem))
+		return -ERESTARTSYS;
+	switch(cmd)
 	{
-		printk(KERN_ALERT "Allocating a new scull_qset!\n");
-		*curr = scull_allocate_qset();
-		if ( prev != NULL )
-		{		
-			(*prev)->next = *curr;
-		}
-		else
-		{
-		   printk(KERN_ALERT "Allocated a new scull data chain !\n");		
-		}	
-		if ( quantumIndex != 0 || quantumLocalOffset != 0 )
-		{
-			printk(KERN_ALERT " Inconsistent state !!, new qset created but quantumIndex is %d and quantumLocalOffset is %d", quantumIndex, quantumLocalOffset );
-		}
-	}
-	copyCount = ( count < ( SCULL_QUANTUM - quantumLocalOffset ) ? count : ( SCULL_QUANTUM - quantumLocalOffset ));
-	copy_from_user ( (*curr)->data[quantumIndex] + quantumLocalOffset, buff, copyCount );
-	*off += copyCount;
-	dev->size += copyCount;
-	printk( KERN_ALERT "Copied %d bytes from user \n", copyCount);
-	//while (1); This is to test behavior of pre-emptible vs non-preemptible kernel
-	
-
-	return copyCount;
+	    case SCULL_IOCGDEVSIZE:
+		printk(KERN_ALERT "Got IOCTL 0\n");
+		retVal = put_user(dev->size, (unsigned int __user *)(arg));
+		break;
+	    case SCULL_IOCGAKey:
+		printk(KERN_ALERT "Got IOCTL 1\n");
+		retVal = put_user(dev->access_key, (unsigned int __user *)(arg));
+		break;
+	    case SCULL_IOCSAKey:
+		printk(KERN_ALERT "Got IOCTL 2\n");
+		retVal = get_user(dev->access_key, (unsigned int __user *)(arg));
+		break;
+	    default:		
+		printk(KERN_ALERT "Unknown IOCTL number:%u\n", _IOC_NR(cmd));	 
+	} 
+	up(&dev->sem);
+	return retVal;
 }
 
 struct file_operations f_ops = {
 	.open    = scull_open,
 	.release = scull_release,
 	.read  = scull_read,
-	.write = scull_write
+	.write = scull_write,
+	.unlocked_ioctl = scull_ioctl
 };
 
 static int scull_setup_chardev_regions(void)
@@ -249,6 +319,7 @@ static int setup_scull(struct scull_dev * dev, int scullNum)
 	scull0.quantum = SCULL_QUANTUM;
 	scull0.qset = SCULL_QSET;
 	scull0.size = 0;
+	sema_init(&scull0.sem, 1);
 	cdev_init(&dev->cdev, &f_ops);
 	devNo = MKDEV(SCULL_MAJOR, SCULL_MINOR+scullNum);
 	err = cdev_add(&dev->cdev, devNo, 1);
